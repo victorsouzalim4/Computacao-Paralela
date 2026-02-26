@@ -1,5 +1,3 @@
-
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -21,7 +19,7 @@ int sieveOfEratosthenes(int n)
    #pragma omp parallel 
    {
       for (int p=2; p <= sqrt_n; p++){
-         
+
          // If prime[p] is not changed, then it is a prime
          if (prime[p] == true){
             int tid = omp_get_thread_num();
