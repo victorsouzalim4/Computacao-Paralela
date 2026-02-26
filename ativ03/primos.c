@@ -20,19 +20,22 @@ int sieveOfEratosthenes(int n)
 
    #pragma omp parallel 
    {
-      int tid = omp_get_thread_num();
-      #pragma omp for
       for (int p=2; p <= sqrt_n; p++){
-         //printf("Thread %d\n", tid);
+         
          // If prime[p] is not changed, then it is a prime
-         if (prime[p] == true)
-         {
-            // Update all multiples of p
+         if (prime[p] == true){
+            int tid = omp_get_thread_num();
+            printf("Thread %d\n", tid);
+
+            #pragma omp for
             for (int i=p*2; i<=n; i += p)
-            prime[i] = false;
+               prime[i] = false;
+
          }
       }
    }
+
+   
    
 
     // count prime numbers
