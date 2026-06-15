@@ -1,0 +1,153 @@
+Atividade 24 - Somatorio paralelo em CUDA
+
+Configuracao
+------------
+Tamanho do vetor: width = 40000000
+Tipo dos dados: double
+Resultado esperado: Sum = 799999980000000.000000
+
+Compilacao usada
+----------------
+Versao CUDA original, com memoria __shared__:
+nvcc -O3 sum_cuda-1.cu -o sum_cuda_shared
+
+Versao CUDA modificada, sem memoria __shared__:
+nvcc -O3 sum_cuda_sem_shared.cu -o sum_cuda_sem_shared
+
+Versoes sequencial, OpenMP multicore e OpenMP GPU:
+gcc-8 -O3 -fopenmp sum_openmp_comparacao.c -o sum_openmp
+
+Caso a versao OpenMP GPU precise de offload NVIDIA neste ambiente:
+gcc -O3 -fopenmp -fcf-protection=none -fno-stack-protector -foffload=nvptx-none sum_openmp_comparacao.c -o sum_openmp
+
+Comandos de medicao
+-------------------
+Tempo total da versao CUDA com __shared__:
+/usr/bin/time -p ./sum_cuda_shared
+
+Tempo total da versao CUDA sem __shared__:
+/usr/bin/time -p ./sum_cuda_sem_shared
+
+Profiler pedido no enunciado, quando nvprof estiver disponivel:
+nvprof ./sum_cuda_shared
+nvprof ./sum_cuda_sem_shared
+
+Ambiente atual com Nsight Compute:
+sudo ncu --target-processes all --replay-mode kernel ./sum_cuda_shared
+sudo ncu --target-processes all --replay-mode kernel ./sum_cuda_sem_shared
+
+Observacao sobre o ambiente:
+O nvprof foi substituido nas instalacoes CUDA mais novas. O ncu mede bem o kernel
+sum_cuda(double*, double*, int), mas normalmente nao e a melhor ferramenta para
+tempos de copia [CUDA memcpy HtoD]. Quando nvprof nao estiver disponivel, a copia
+HtoD pode ser medida com Nsight Systems:
+nsys profile --stats=true ./sum_cuda_shared
+nsys profile --stats=true ./sum_cuda_sem_shared
+
+Tempos medidos
+--------------
+CUDA com __shared__
+Tempo total com time:
+real: 2.21 s
+user: 0.05 s
+sys: 0.31 s
+
+Profiler:
+[CUDA memcpy HtoD]: PREENCHER_APOS_RECOMPILAR_COM_EVENTOS
+sum_cuda(double*, double*, int): 7.01 ms pelo ncu
+
+CUDA sem __shared__
+Tempo total com time:
+real: 0.87 s
+user: 0.05 s
+sys: 0.42 s
+
+Profiler:
+[CUDA memcpy HtoD]: PREENCHER_APOS_RECOMPILAR_COM_EVENTOS
+sum_cuda(double*, double*, int): 3.54 ms pelo ncu
+
+Comparacao com outras implementacoes
+------------------------------------
+Sequencial (-O3):
+tempo: PREENCHER
+
+OpenMP multicore (-O3 -fopenmp):
+tempo: PREENCHER
+
+OpenMP GPU target (-O3 -fopenmp):
+tempo: PREENCHER
+
+Dados adicionais do Nsight Compute
+----------------------------------
+CUDA com __shared__:
+Grid: (39063, 1, 1)
+Bloco: (1024, 1, 1)
+Threads: 40000512
+Duracao do kernel: 7.01 ms
+Memory Throughput: 25.60%
+DRAM Throughput: 17.90%
+Compute (SM) Throughput: 61.94%
+Static Shared Memory Per Block: 8.19 KB
+Theoretical Occupancy: 66.67%
+Achieved Occupancy: 65.85%
+
+CUDA sem __shared__:
+Grid: (39063, 1, 1)
+Bloco: (1024, 1, 1)
+Threads: 40000512
+Duracao do kernel: 3.54 ms
+Memory Throughput: 36.40%
+DRAM Throughput: 36.40%
+Compute (SM) Throughput: 61.39%
+Static Shared Memory Per Block: 0 B
+Theoretical Occupancy: 66.67%
+Achieved Occupancy: 60.37%
+
+Analise dos resultados
+----------------------
+A versao CUDA original usa memoria __shared__ para fazer a reducao dentro de
+cada bloco. Cada thread copia um elemento do vetor global para a memoria
+compartilhada do bloco, e depois o bloco reduz esses valores em paralelo usando
+sincronizacoes com __syncthreads(). Essa estrategia reduz dentro do bloco inteiro
+na GPU e gera apenas um parcial por bloco, mas paga o custo das sincronizacoes e
+usa 8.19 KB de memoria compartilhada estatica por bloco.
+
+Na versao sem __shared__, a reducao foi feita usando registradores dentro de cada
+warp, com __shfl_down_sync. Cada warp gera um resultado parcial e grava esse
+valor em memoria global. Assim, a versao evita memoria compartilhada, evita
+__syncthreads() e tambem evita operacoes atomicas. Ela produz mais resultados
+parciais para a CPU somar no final, mas neste experimento ainda ficou mais rapida:
+o kernel caiu de 7.01 ms para 3.54 ms, e o tempo total caiu de 2.21 s para
+0.87 s.
+
+O tempo de [CUDA memcpy HtoD] representa a copia do vetor a da memoria da CPU
+para a memoria da GPU. Como width = 40000000 e cada elemento e um double, essa
+copia transfere aproximadamente 320 MB. Esse tempo nao mede computacao; ele mede
+movimentacao de dados pelo barramento entre host e device. Em problemas pequenos
+ou com pouco trabalho por byte transferido, essa copia pode dominar o tempo total.
+Neste somatorio, ha pouca computacao por elemento, entao o custo de transferencia
+e importante na comparacao entre CPU, OpenMP GPU e CUDA.
+
+O tempo de sum_cuda(double*, double*, int) mede apenas o kernel de reducao na GPU.
+Esse tempo deve ser comparado separadamente do tempo total, porque o tempo total
+inclui alocacao, copia HtoD, copia DtoH e a soma final dos parciais na CPU. A
+comparacao mais justa entre implementacoes deve deixar claro se esta sendo usado
+o tempo total do programa ou apenas o tempo do kernel/regiao paralela.
+
+Comparando CUDA e OpenMP GPU, a versao CUDA normalmente e mais direta e oferece
+maior controle sobre blocos, threads, memoria compartilhada e reducao. A versao
+OpenMP target e mais simples de escrever, mas o compilador e o runtime precisam
+gerar e gerenciar o codigo de offload, o mapeamento de memoria e a reducao. Por
+isso, em reducoes simples, OpenMP GPU pode ter overhead maior ou desempenho menor
+que uma implementacao CUDA ajustada manualmente. Por outro lado, OpenMP multicore
+pode ser competitivo no tempo total quando o custo de transferir 320 MB para a GPU
+e maior que o ganho obtido pelo kernel.
+
+Conclusao
+---------
+Neste experimento, a versao sem __shared__ foi a mais rapida. O motivo principal
+e que a reducao por warp com __shfl_down_sync evita as sincronizacoes de bloco
+usadas na versao com __shared__. Mesmo gerando mais parciais para a CPU, o custo
+menor do kernel compensou. A copia [CUDA memcpy HtoD] deve ser analisada
+separadamente, pois ela pode explicar por que uma versao GPU com kernel rapido nem
+sempre vence no tempo total do programa.
