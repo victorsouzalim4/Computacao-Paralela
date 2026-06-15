@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <title>Relatorio Perf - Crivo de Eratostenes</title>
+  <style>
+    @page { size: A4; margin: 18mm; }
+    body {
+      color: #1f2933;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 11.5pt;
+      line-height: 1.45;
+    }
+    h1, h2 {
+      color: #102a43;
+      margin: 0 0 10px;
+    }
+    h1 { font-size: 20pt; }
+    h2 { font-size: 14pt; margin-top: 22px; }
+    p { margin: 8px 0; }
+    table {
+      border-collapse: collapse;
+      margin-top: 10px;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid #9fb3c8;
+      padding: 7px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #d9e2ec;
+      color: #102a43;
+    }
+    code {
+      background: #f0f4f8;
+      border: 1px solid #d9e2ec;
+      border-radius: 3px;
+      font-family: Consolas, monospace;
+      padding: 1px 4px;
+    }
+    pre {
+      background: #f0f4f8;
+      border: 1px solid #d9e2ec;
+      border-radius: 4px;
+      font-size: 9.5pt;
+      padding: 10px;
+      white-space: pre-wrap;
+    }
+    ul { margin-top: 6px; }
+    .note {
+      border-left: 4px solid #627d98;
+      margin: 12px 0;
+      padding: 8px 12px;
+      background: #f0f4f8;
+    }
+  </style>
+</head>
+<body>
+  <h1>Avaliacao de desempenho do Crivo de Eratostenes com Perf</h1>
+
+  <p><strong>Programa avaliado:</strong> Crivo de Eratostenes para <code>n = 100000000</code>, comparando uma versao sequencial e uma versao paralela OpenMP limitada a dois nucleos/threads.</p>
+
+  <div class="note">
+    <strong>Observacao:</strong> os valores da tabela abaixo sao simulados/ilustrativos, pois esta maquina esta em Windows, sem <code>gcc</code>, sem <code>perf</code> e sem uma distribuicao WSL pronta para executar a coleta real. A pasta <code>ativ10</code> contem as fontes e o script <code>run_perf.sh</code> para coleta direta em Linux.
+  </div>
+
+  <h2>Comandos de coleta</h2>
+  <pre>cd ativ10
+gcc -O3 -march=native crivo_seq.c -lm -o crivo_seq
+gcc -O3 -march=native -fopenmp crivo_omp2.c -lm -o crivo_omp2
+
+perf stat -r 3 -e task-clock,cycles,instructions,stalled-cycles-frontend,stalled-cycles-backend,LLC-loads,LLC-load-misses ./crivo_seq 100000000
+OMP_NUM_THREADS=2 perf stat -r 3 -e task-clock,cycles,instructions,stalled-cycles-frontend,stalled-cycles-backend,LLC-loads,LLC-load-misses ./crivo_omp2 100000000</pre>
+
+  <h2>Tabela comparativa</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Metrica do Perf</th>
+        <th>Sequencial</th>
+        <th>Paralelo - 2 nucleos</th>
+        <th>Interpretacao esperada</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>CPUs utilized</td>
+        <td>0,99</td>
+        <td>1,78</td>
+        <td>A versao paralela usa mais de um nucleo, mas nao chega a 2,00 por causa de trechos seriais, barreiras OpenMP e espera por memoria.</td>
+      </tr>
+      <tr>
+        <td>Frontend cycles idle</td>
+        <td>4,1%</td>
+        <td>7,8%</td>
+        <td>A versao paralela tem maior custo de controle e sincronizacao, aumentando ciclos em que o processador nao recebe instrucoes eficientemente.</td>
+      </tr>
+      <tr>
+        <td>Backend cycles idle</td>
+        <td>58,2%</td>
+        <td>72,4%</td>
+        <td>O backend fica mais ocioso na versao paralela, indicando espera por memoria/cache devido ao acesso compartilhado e irregular ao vetor <code>prime[]</code>.</td>
+      </tr>
+      <tr>
+        <td>Instructions per cycle (IPC)</td>
+        <td>0,62</td>
+        <td>0,41</td>
+        <td>O IPC menor no paralelo mostra que adicionar threads nao aumentou proporcionalmente o trabalho util por ciclo.</td>
+      </tr>
+      <tr>
+        <td>LL-cache hits / taxa de falta L3</td>
+        <td>18,42 M loads; 2,61 M misses; miss rate 14,2%</td>
+        <td>31,85 M loads; 6,72 M misses; miss rate 21,1%</td>
+        <td>A taxa de falta L3 maior no paralelo reforca que a aplicacao esta limitada por memoria e compartilhamento de cache.</td>
+      </tr>
+      <tr>
+        <td>Time elapsed</td>
+        <td>9,84 s</td>
+        <td>6,37 s</td>
+        <td>O speedup aproximado e 1,54x, abaixo do ideal de 2x, coerente com os gargalos de sincronizacao e memoria.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Gargalos da versao paralela</h2>
+  <ul>
+    <li><strong>Sincronizacao frequente:</strong> o <code>#pragma omp for</code> esta dentro do loop de <code>p</code>. Cada primo encontrado introduz uma divisao de trabalho e uma barreira implicita, aumentando o custo de coordenacao.</li>
+    <li><strong>Dependencia no vetor compartilhado:</strong> todas as threads leem e escrevem em <code>prime[]</code>. Mesmo que escrever <code>false</code> repetidamente nao altere o resultado, isso gera trafego de cache e possivel invalidacao entre nucleos.</li>
+    <li><strong>Acesso a memoria pouco local:</strong> para cada <code>p</code>, o loop marca posicoes com salto <code>p</code>. Isso reduz localidade espacial, aumenta pressoes na hierarquia de cache e pode elevar ciclos ociosos no backend.</li>
+    <li><strong>Trabalho redundante:</strong> a marcacao comeca em <code>2 * p</code>. Numeros menores que <code>p * p</code> ja foram marcados por primos anteriores.</li>
+    <li><strong>Baixo paralelismo efetivo no inicio:</strong> para valores pequenos de <code>p</code>, ha muito trabalho, mas muitas escritas concorrentes no mesmo vetor; para valores maiores, ha menos iteracoes e a distribuicao entre duas threads fica menos eficiente.</li>
+  </ul>
+
+  <h2>Otimizacao proposta</h2>
+  <p>Uma melhoria direta e iniciar a marcacao em <code>p * p</code>, em vez de <code>2 * p</code>. Isso elimina marcacoes redundantes ja realizadas por primos menores, reduz a quantidade de instrucoes executadas e diminui trafego de memoria/cache.</p>
+
+  <p>Uma otimizacao mais forte seria usar um crivo segmentado: cada thread processa blocos independentes do intervalo, usando a lista de primos ate <code>sqrt(n)</code>. Essa abordagem melhora localidade de cache, reduz disputa no vetor global e diminui invalidacoes entre nucleos.</p>
+
+  <h2>Conclusao</h2>
+  <p>O principal limite esperado para a versao paralela nao e falta de nucleos, mas custo de memoria e sincronizacao. A paralelizacao atual divide a marcacao para cada primo, porem paga barreiras frequentes e compartilha intensamente o vetor <code>prime[]</code>. Por isso, mesmo com dois nucleos, o ganho tende a ficar abaixo de 2x.</p>
+</body>
+</html>
